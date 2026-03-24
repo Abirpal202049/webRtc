@@ -26,6 +26,7 @@
  * ============================================================================
  */
 
+import { createServer } from "http";
 import { WebSocketServer } from "ws";
 
 const PORT = process.env.PORT || 8080;
@@ -36,9 +37,26 @@ const PORT = process.env.PORT || 8080;
  */
 const rooms = new Map();
 
-const wss = new WebSocketServer({ port: PORT });
+/**
+ * We create an HTTP server and attach the WebSocket server to it.
+ * This lets us serve a /health endpoint for Render's health checks
+ * on the same port as the WebSocket server.
+ */
+const server = createServer((req, res) => {
+  if (req.url === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", rooms: rooms.size }));
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
 
-console.log(`Signaling server running on ws://localhost:${PORT}`);
+const wss = new WebSocketServer({ server });
+
+server.listen(PORT, () => {
+  console.log(`Signaling server running on port ${PORT}`);
+});
 
 wss.on("connection", (socket) => {
   let currentRoom = null;
