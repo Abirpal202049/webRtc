@@ -9,6 +9,7 @@ import VideoPanel from "../components/VideoPanel";
 import ControlBar from "../components/ControlBar";
 import ConnectionLog from "../components/ConnectionLog";
 import StateIndicator from "../components/StateIndicator";
+import MetricsDashboard from "../components/MetricsDashboard";
 import JoinRequestNotification from "../components/JoinRequestNotification";
 
 export default function MeetingPage() {
@@ -135,6 +136,7 @@ export default function MeetingPage() {
               isVideoEnabled={webrtc.isVideoEnabled}
               isScreenSharing={webrtc.isScreenSharing}
               isRemoteScreenSharing={webrtc.isRemoteScreenSharing}
+              screenStream={webrtc.screenStream}
             />
           </div>
           <ControlBar
@@ -151,11 +153,11 @@ export default function MeetingPage() {
           />
         </div>
 
-        {/* Debug panel */}
+        {/* Debug panel — entire right side scrolls as one */}
         <div
           className={`${
-            showDebug ? "flex" : "hidden"
-          } lg:flex lg:w-96 flex-col gap-2 sm:gap-4 overflow-y-auto max-h-[40vh] lg:max-h-none shrink-0`}
+            showDebug ? "block" : "hidden"
+          } lg:block lg:w-96 overflow-y-auto max-h-[40vh] lg:max-h-full min-h-0 shrink-0 space-y-2 sm:space-y-4`}
         >
           <StateIndicator
             connectionState={webrtc.connectionState}
@@ -163,6 +165,7 @@ export default function MeetingPage() {
             signalingState={webrtc.signalingState}
             iceCandidates={webrtc.iceCandidates}
           />
+          <MetricsDashboard peerConnectionRef={webrtc.peerConnectionRef} />
           <ConnectionLog eventLog={webrtc.eventLog} />
         </div>
       </div>

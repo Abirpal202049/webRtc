@@ -55,6 +55,7 @@ export function useWebRTC() {
   // ── Screen sharing state ──
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isRemoteScreenSharing, setIsRemoteScreenSharing] = useState(false);
+  const [screenStream, setScreenStream] = useState(null);
 
   // ── Refs ──
   const peerConnectionRef = useRef(null);
@@ -439,6 +440,7 @@ export function useWebRTC() {
     setIsRemoteVideoEnabled(false);
     setIsScreenSharing(false);
     setIsRemoteScreenSharing(false);
+    setScreenStream(null);
 
     addLog({ timestamp: new Date(), event: "WEBRTC", detail: "Call ended — all resources released" });
   }, [addLog]);
@@ -474,7 +476,10 @@ export function useWebRTC() {
         const newTrack = newStream.getAudioTracks()[0];
         localStreamRef.current.addTrack(newTrack);
         if (peerConnectionRef.current) {
-          const sender = peerConnectionRef.current.getSenders().find((s) => !s.track);
+          const audioTransceiver = peerConnectionRef.current
+            .getTransceivers()
+            .find((t) => t.sender && t.receiver?.track?.kind === "audio");
+          const sender = audioTransceiver?.sender;
           if (sender) await sender.replaceTrack(newTrack);
         }
         setIsAudioEnabled(true);
@@ -522,8 +527,10 @@ export function useWebRTC() {
         const newTrack = newStream.getVideoTracks()[0];
         localStreamRef.current.addTrack(newTrack);
         if (peerConnectionRef.current) {
-          // Find the sender that currently has no track (was set to null above)
-          const sender = peerConnectionRef.current.getSenders().find((s) => !s.track);
+          const videoTransceiver = peerConnectionRef.current
+            .getTransceivers()
+            .find((t) => t.sender && t.receiver?.track?.kind === "video");
+          const sender = videoTransceiver?.sender;
           if (sender) await sender.replaceTrack(newTrack);
         }
         setIsVideoEnabled(true);
@@ -560,15 +567,17 @@ export function useWebRTC() {
 
         const screenTrack = screenStream.getVideoTracks()[0];
         screenTrackRef.current = screenTrack;
+        setScreenStream(screenStream);
 
-        // Find the video sender and save the current camera track
+        // Find the VIDEO sender using transceivers (reliable even when track is null)
         if (peerConnectionRef.current) {
-          const videoSender = peerConnectionRef.current
-            .getSenders()
-            .find((s) => s.track?.kind === "video" || !s.track);
+          const videoTransceiver = peerConnectionRef.current
+            .getTransceivers()
+            .find((t) => t.sender && t.receiver?.track?.kind === "video");
+          const videoSender = videoTransceiver?.sender
+            || peerConnectionRef.current.getSenders().find((s) => s.track?.kind === "video");
 
           if (videoSender) {
-            // Save whatever the sender currently has (camera track or null)
             savedCameraTrackRef.current = videoSender.track;
             await videoSender.replaceTrack(screenTrack);
           }
@@ -610,11 +619,13 @@ export function useWebRTC() {
       screenTrackRef.current = null;
     }
 
-    // Restore the previous camera track on the sender
+    // Restore the previous camera track on the video sender
     if (peerConnectionRef.current) {
-      const videoSender = peerConnectionRef.current
-        .getSenders()
-        .find((s) => s.track?.kind === "video" || !s.track);
+      const videoTransceiver = peerConnectionRef.current
+        .getTransceivers()
+        .find((t) => t.sender && t.receiver?.track?.kind === "video");
+      const videoSender = videoTransceiver?.sender
+        || peerConnectionRef.current.getSenders().find((s) => s.track?.kind === "video");
 
       if (videoSender) {
         const savedTrack = savedCameraTrackRef.current;
@@ -635,6 +646,7 @@ export function useWebRTC() {
 
     savedCameraTrackRef.current = null;
     setIsScreenSharing(false);
+    setScreenStream(null);
 
     // Notify remote peer
     if (signalingClientRef.current) {
@@ -647,6 +659,7 @@ export function useWebRTC() {
   }, [isVideoEnabled, isAudioEnabled, addLog]);
 
   return {
+    peerConnectionRef,
     localStream,
     remoteStream,
     connectionState,
@@ -660,6 +673,7 @@ export function useWebRTC() {
     isRemoteVideoEnabled,
     isScreenSharing,
     isRemoteScreenSharing,
+    screenStream,
     pendingJoinRequests,
     admissionStatus,
     startCall,

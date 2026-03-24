@@ -1,15 +1,14 @@
-import { useEffect, useRef, useCallback } from "react";
-import { UserRound, VideoOff, MonitorUp, ExternalLink, Minimize2 } from "lucide-react";
+import { useEffect, useRef, useCallback, useState } from "react";
+import { UserRound, VideoOff, MonitorUp, ExternalLink, Maximize, Minimize } from "lucide-react";
 
 /**
  * VideoPanel — Displays local and remote video streams.
  *
- * The remote <video> element is ALWAYS mounted in the DOM.
- * We overlay a placeholder on top when the remote camera is off.
- *
- * When the remote peer is screen sharing, the video switches to
- * object-contain (letterboxed) so the full screen content is visible
- * without cropping.
+ * Screen share handling:
+ * - Sharer sees a preview of what they're sharing in the local PiP
+ * - Viewer sees the shared screen as the main view with object-contain
+ * - Both can pop out the screen share into a separate window
+ * - Both can enlarge to fullscreen
  */
 export default function VideoPanel({
   localStream,
@@ -19,109 +18,117 @@ export default function VideoPanel({
   isVideoEnabled,
   isScreenSharing,
   isRemoteScreenSharing,
+  screenStream,
 }) {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const screenPreviewRef = useRef(null);
+  const containerRef = useRef(null);
   const popoutWindowRef = useRef(null);
-  const popoutVideoRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
+  // Attach local camera stream
   useEffect(() => {
     if (localVideoRef.current && localStream) {
       localVideoRef.current.srcObject = localStream;
     }
   }, [localStream]);
 
+  // Attach remote stream
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
     }
-    // Also update the popout window if it's open
-    if (popoutVideoRef.current && remoteStream) {
-      popoutVideoRef.current.srcObject = remoteStream;
+    // Keep global in sync for popout
+    if (remoteStream) {
+      window.__popoutStream = remoteStream;
     }
   }, [remoteStream]);
 
-  // Clean up popout window on unmount or when screen share stops
+  // Attach screen share preview for the sharer
   useEffect(() => {
-    if (!isRemoteScreenSharing && popoutWindowRef.current && !popoutWindowRef.current.closed) {
-      popoutWindowRef.current.close();
-      popoutWindowRef.current = null;
-      popoutVideoRef.current = null;
+    if (screenPreviewRef.current && screenStream) {
+      screenPreviewRef.current.srcObject = screenStream;
     }
-  }, [isRemoteScreenSharing]);
+  }, [screenStream]);
 
+  // Close popout when screen share stops
+  useEffect(() => {
+    const noScreenShare = !isRemoteScreenSharing && !isScreenSharing;
+    if (noScreenShare && popoutWindowRef.current && !popoutWindowRef.current.closed) {
+      popoutWindowRef.current.postMessage({ type: "popout-stream-ended" }, "*");
+      popoutWindowRef.current = null;
+    }
+  }, [isRemoteScreenSharing, isScreenSharing]);
+
+  // Listen for fullscreen changes
+  useEffect(() => {
+    const handleFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", handleFsChange);
+    return () => document.removeEventListener("fullscreenchange", handleFsChange);
+  }, []);
+
+  // Clean up on unmount
   useEffect(() => {
     return () => {
       if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
         popoutWindowRef.current.close();
       }
+      delete window.__popoutStream;
     };
   }, []);
 
   /**
-   * Pop out the screen share into a separate browser window.
-   * We create a minimal HTML page with just a <video> element,
-   * then set its srcObject to the same remote MediaStream.
-   * This works because MediaStream objects can be shared within
-   * the same browsing context group (same origin, opener relationship).
+   * Pop out into a separate browser window.
+   * For the sharer: pops out their own screen stream.
+   * For the viewer: pops out the remote stream.
    */
   const popOutScreenShare = useCallback(() => {
     if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
-      // Already open — focus it
       popoutWindowRef.current.focus();
       return;
     }
 
+    // Set the appropriate stream — sharer uses screenStream, viewer uses remoteStream
+    window.__popoutStream = isScreenSharing ? screenStream : remoteStream;
+
     const popup = window.open(
-      "",
+      "/popout",
       "screen-share-popout",
       "width=1280,height=720,menubar=no,toolbar=no,location=no,status=no"
     );
 
-    if (!popup) return; // popup blocked
-
-    popup.document.write(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Screen Share</title>
-        <style>
-          * { margin: 0; padding: 0; box-sizing: border-box; }
-          body { background: #000; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
-          video { width: 100%; height: 100%; object-fit: contain; }
-        </style>
-      </head>
-      <body>
-        <video id="popout-video" autoplay playsinline></video>
-      </body>
-      </html>
-    `);
-    popup.document.close();
-
-    const videoEl = popup.document.getElementById("popout-video");
-    if (videoEl && remoteStream) {
-      videoEl.srcObject = remoteStream;
-    }
-
+    if (!popup) return;
     popoutWindowRef.current = popup;
-    popoutVideoRef.current = videoEl;
 
-    // Clean up ref when popup is closed by the user
-    popup.addEventListener("beforeunload", () => {
-      popoutWindowRef.current = null;
-      popoutVideoRef.current = null;
-    });
-  }, [remoteStream]);
+    const checkClosed = setInterval(() => {
+      if (popup.closed) {
+        popoutWindowRef.current = null;
+        clearInterval(checkClosed);
+      }
+    }, 500);
+  }, [remoteStream, screenStream, isScreenSharing]);
+
+  const toggleFullscreen = useCallback(() => {
+    if (!containerRef.current) return;
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      containerRef.current.requestFullscreen();
+    }
+  }, []);
+
+  const showScreenShareControls = isRemoteScreenSharing || isScreenSharing;
 
   return (
-    <div className="relative w-full h-full bg-gray-950 rounded-2xl overflow-hidden">
+    <div ref={containerRef} className="relative w-full h-full bg-gray-950 rounded-2xl overflow-hidden">
       {/* Remote video — ALWAYS mounted for audio continuity */}
       <video
         ref={remoteVideoRef}
         autoPlay
         playsInline
         className={`w-full h-full ${
-          isRemoteScreenSharing ? "object-contain bg-black" : "object-cover"
+          isRemoteScreenSharing || isFullscreen ? "object-contain bg-black" : "object-cover"
         } ${remoteStream && isRemoteVideoEnabled ? "" : "hidden"}`}
       />
 
@@ -151,36 +158,54 @@ export default function VideoPanel({
         </div>
       )}
 
-      {/* Remote screen sharing indicator + pop-out button */}
-      {isRemoteScreenSharing && remoteStream && isRemoteVideoEnabled && (
+      {/* Top bar — presenting label + video controls */}
+      {(remoteStream && isRemoteVideoEnabled) && (
         <div className="absolute top-3 left-3 right-3 flex items-center justify-between">
-          <div className="flex items-center gap-1.5 bg-blue-600/80 backdrop-blur-sm text-white text-xs font-medium px-3 py-1.5 rounded-lg">
-            <MonitorUp className="w-3.5 h-3.5" />
-            Presenting
+          {/* Presenting label — only during screen share */}
+          {showScreenShareControls ? (
+            <div className="flex items-center gap-1.5 bg-blue-600/80 backdrop-blur-sm text-white text-xs font-medium px-3 py-1.5 rounded-lg">
+              <MonitorUp className="w-3.5 h-3.5" />
+              {isScreenSharing ? "You are presenting" : "Presenting"}
+            </div>
+          ) : (
+            <div />
+          )}
+
+          {/* Pop-out and enlarge — always available when there's remote video */}
+          <div className="flex items-center gap-2 opacity-0 hover:opacity-100 focus-within:opacity-100 transition-opacity">
+            <button
+              onClick={popOutScreenShare}
+              className="flex items-center gap-1.5 bg-gray-800/80 hover:bg-gray-700/80 backdrop-blur-sm text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+              title="Pop out to separate window"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Pop out</span>
+            </button>
+            <button
+              onClick={toggleFullscreen}
+              className="flex items-center gap-1.5 bg-gray-800/80 hover:bg-gray-700/80 backdrop-blur-sm text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+              title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+            >
+              {isFullscreen ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
+              <span className="hidden sm:inline">{isFullscreen ? "Exit" : "Enlarge"}</span>
+            </button>
           </div>
-          <button
-            onClick={popOutScreenShare}
-            className="flex items-center gap-1.5 bg-gray-800/80 hover:bg-gray-700/80 backdrop-blur-sm text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
-            title="Pop out to separate window"
-          >
-            <ExternalLink className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Pop out</span>
-          </button>
         </div>
       )}
 
-      {/* Local screen sharing banner */}
-      {isScreenSharing && (
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-blue-600/90 backdrop-blur-sm text-white text-xs sm:text-sm font-medium px-4 py-2 rounded-lg">
-          <MonitorUp className="w-4 h-4" />
-          You are presenting
-        </div>
-      )}
-
-      {/* Local video — small picture-in-picture overlay */}
+      {/* Local PiP — shows screen preview when sharing, camera otherwise */}
       {localStream && (
         <div className="absolute bottom-3 right-3 w-28 h-20 sm:w-48 sm:h-36 rounded-lg sm:rounded-xl overflow-hidden border-2 border-gray-700 shadow-2xl bg-gray-900">
-          {isVideoEnabled ? (
+          {isScreenSharing && screenStream ? (
+            // Sharer sees a preview of what they're sharing
+            <video
+              ref={screenPreviewRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-full object-contain bg-black"
+            />
+          ) : isVideoEnabled ? (
             <video
               ref={localVideoRef}
               autoPlay
