@@ -1,44 +1,39 @@
 /**
  * ============================================================================
- * SIGNALING CLIENT — WebSocket Wrapper for Peer Discovery
+ * SIGNALING CLIENT — WebSocket Wrapper for Peer Discovery (Phase 2)
  * ============================================================================
  *
  * This is NOT part of WebRTC itself.
  *
- * WebRTC needs an external channel to exchange connection metadata (SDP offers,
- * SDP answers, and ICE candidates) between peers. This is called "signaling."
- *
- * WebRTC deliberately leaves signaling undefined — you can use:
- *   - WebSockets (what we use here — low latency, bidirectional)
- *   - HTTP polling (simple but slower)
- *   - Server-Sent Events (server → client only, would need HTTP for client → server)
- *   - Even copy-paste in a chat window (seriously, some demos do this!)
- *
- * We chose WebSockets because the SDP/ICE exchange is a rapid back-and-forth,
- * and WebSockets give us real-time bidirectional messaging.
+ * Phase 2 changes:
+ * - No longer auto-joins on socket open — the caller decides whether to
+ *   send "create" (host) or "join-request" (joiner) after connecting.
+ * - New message types for admission control: create, join-request, admit, deny.
+ * - The existing offer/answer/ice-candidate relay is unchanged.
  * ============================================================================
  */
 
 /**
- * Creates a signaling client that connects to our WebSocket signaling server.
+ * Creates a signaling client that connects to the WebSocket signaling server.
  *
- * @param {string} roomId - The room to join. Both peers must use the same room ID.
  * @param {object} callbacks - Event handlers:
- *   - onPeerJoined: The other peer entered the room (we should create an offer)
- *   - onPeerLeft: The other peer disconnected
- *   - onOffer: Received an SDP offer from the other peer
- *   - onAnswer: Received an SDP answer from the other peer
- *   - onIceCandidate: Received an ICE candidate from the other peer
- *   - onRoomFull: Room already has 2 peers
- *   - onJoined: Successfully joined the room
- *   - onLog: Every signaling event, for the educational event log
+ *   - onConnected: WebSocket connection established
+ *   - onCreated: Room created successfully (creator)
+ *   - onRoomExists: Room already exists (creator)
+ *   - onJoinRequest: Someone wants to join (creator receives { pendingId, displayName })
+ *   - onWaiting: Join request is pending (joiner)
+ *   - onAdmitted: Creator let you in (joiner)
+ *   - onDenied: Creator rejected you (joiner)
+ *   - onRoomNotFound: No such room exists
+ *   - onRoomFull: Room already has 2 people
+ *   - onPeerJoined: Peer was admitted, start WebRTC (creator)
+ *   - onPeerLeft: Other peer disconnected
+ *   - onOffer: Received SDP offer
+ *   - onAnswer: Received SDP answer
+ *   - onIceCandidate: Received ICE candidate
+ *   - onLog: Every event, for the educational log panel
  */
-export function createSignalingClient(roomId, callbacks) {
-  /**
-   * Connect to the signaling server.
-   * In development, Vite proxies /ws to localhost:8080.
-   * In production, you'd point this at your deployed server.
-   */
+export function createSignalingClient(callbacks) {
   const wsUrl = import.meta.env.VITE_SIGNALING_URL || `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:8080`;
   const socket = new WebSocket(wsUrl);
 
@@ -48,29 +43,61 @@ export function createSignalingClient(roomId, callbacks) {
 
   socket.onopen = () => {
     log("SIGNALING", "Connected to signaling server");
-
-    // Tell the server which room we want to join
-    send({ type: "join", roomId });
-    log("SIGNALING", `Requesting to join room "${roomId}"`);
+    callbacks.onConnected?.();
   };
 
   socket.onmessage = (event) => {
     const message = JSON.parse(event.data);
 
     switch (message.type) {
-      case "joined":
-        log("SIGNALING", `Joined room "${message.roomId}" (${message.peerCount}/2 peers)`);
-        callbacks.onJoined?.(message);
+      // ── Creator messages ──
+
+      case "created":
+        log("SIGNALING", `Room "${message.roomId}" created — waiting for participants`);
+        callbacks.onCreated?.(message);
         break;
 
+      case "room-exists":
+        log("ERROR", "Room already exists");
+        callbacks.onRoomExists?.();
+        break;
+
+      case "join-request":
+        log("SIGNALING", `Someone wants to join (${message.displayName || "Anonymous"})`);
+        callbacks.onJoinRequest?.(message);
+        break;
+
+      // ── Joiner messages ──
+
+      case "waiting":
+        log("SIGNALING", `Join request sent — waiting for host approval`);
+        callbacks.onWaiting?.(message);
+        break;
+
+      case "admitted":
+        log("SIGNALING", `Admitted to room "${message.roomId}"`);
+        callbacks.onAdmitted?.(message);
+        break;
+
+      case "denied":
+        log("SIGNALING", "Join request was denied by the host");
+        callbacks.onDenied?.();
+        break;
+
+      case "room-not-found":
+        log("SIGNALING", "Room not found — host hasn't started the meeting yet");
+        callbacks.onRoomNotFound?.();
+        break;
+
+      case "room-full":
+        log("ERROR", "Room is full (max 2 people)");
+        callbacks.onRoomFull?.();
+        break;
+
+      // ── Shared messages (unchanged from Phase 1) ──
+
       case "peer-joined":
-        /**
-         * Another peer entered our room.
-         * WE are the initiator — we need to create the SDP offer.
-         * The server sends this ONLY to the peer who was already in the room,
-         * which prevents both peers from creating offers simultaneously.
-         */
-        log("SIGNALING", "A peer joined the room — we will create the offer");
+        log("SIGNALING", "Peer joined — creating WebRTC offer");
         callbacks.onPeerJoined?.();
         break;
 
@@ -80,10 +107,6 @@ export function createSignalingClient(roomId, callbacks) {
         break;
 
       case "offer":
-        /**
-         * We received an SDP offer. This means we are the SECOND peer,
-         * and we need to create an SDP answer.
-         */
         log("SIGNALING", "Received SDP offer from remote peer");
         callbacks.onOffer?.(message);
         break;
@@ -98,9 +121,14 @@ export function createSignalingClient(roomId, callbacks) {
         callbacks.onIceCandidate?.(message);
         break;
 
-      case "room-full":
-        log("ERROR", "Room is full (max 2 peers for 1:1 call)");
-        callbacks.onRoomFull?.();
+      case "media-state":
+        log("MEDIA", `Remote peer camera: ${message.video ? "ON" : "OFF"}`);
+        callbacks.onMediaState?.(message);
+        break;
+
+      case "screen-share-state":
+        log("MEDIA", `Remote peer screen share: ${message.sharing ? "STARTED" : "STOPPED"}`);
+        callbacks.onScreenShareState?.(message);
         break;
 
       case "error":
@@ -120,8 +148,36 @@ export function createSignalingClient(roomId, callbacks) {
   function send(message) {
     if (socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify(message));
+    } else {
+      console.warn(`[SignalingClient] Cannot send "${message.type}" — WebSocket state: ${socket.readyState}`);
     }
   }
+
+  // ── Creator actions ──
+
+  function sendCreate(roomId) {
+    log("SIGNALING", `Creating room "${roomId}"`);
+    send({ type: "create", roomId });
+  }
+
+  function sendAdmit(pendingId) {
+    log("SIGNALING", "Admitting joiner");
+    send({ type: "admit", pendingId });
+  }
+
+  function sendDeny(pendingId) {
+    log("SIGNALING", "Denying joiner");
+    send({ type: "deny", pendingId });
+  }
+
+  // ── Joiner actions ──
+
+  function sendJoinRequest(roomId, displayName) {
+    log("SIGNALING", `Requesting to join room "${roomId}"`);
+    send({ type: "join-request", roomId, displayName });
+  }
+
+  // ── WebRTC relay (unchanged from Phase 1) ──
 
   function sendOffer(sdp) {
     log("SIGNALING", "Sending SDP offer to remote peer");
@@ -133,6 +189,16 @@ export function createSignalingClient(roomId, callbacks) {
     send({ type: "answer", sdp });
   }
 
+  function sendMediaState(video, audio) {
+    log("MEDIA", `Sending media state: camera ${video ? "ON" : "OFF"}`);
+    send({ type: "media-state", video, audio });
+  }
+
+  function sendScreenShareState(sharing) {
+    log("MEDIA", `Sending screen share state: ${sharing ? "STARTED" : "STOPPED"}`);
+    send({ type: "screen-share-state", sharing });
+  }
+
   function sendIceCandidate(candidate) {
     log("ICE", `Sending local ICE candidate: ${candidate.candidate?.split(" ")[7] || "unknown"} ${candidate.candidate?.split(" ")[2] || ""}`);
     send({ type: "ice-candidate", candidate });
@@ -142,5 +208,16 @@ export function createSignalingClient(roomId, callbacks) {
     socket.close();
   }
 
-  return { send, sendOffer, sendAnswer, sendIceCandidate, disconnect };
+  return {
+    sendCreate,
+    sendJoinRequest,
+    sendAdmit,
+    sendDeny,
+    sendOffer,
+    sendAnswer,
+    sendIceCandidate,
+    sendMediaState,
+    sendScreenShareState,
+    disconnect,
+  };
 }
