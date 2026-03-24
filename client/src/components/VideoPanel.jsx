@@ -1,5 +1,5 @@
-import { useEffect, useRef } from "react";
-import { UserRound, VideoOff, MonitorUp } from "lucide-react";
+import { useEffect, useRef, useCallback } from "react";
+import { UserRound, VideoOff, MonitorUp, ExternalLink, Minimize2 } from "lucide-react";
 
 /**
  * VideoPanel — Displays local and remote video streams.
@@ -22,6 +22,8 @@ export default function VideoPanel({
 }) {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
+  const popoutWindowRef = useRef(null);
+  const popoutVideoRef = useRef(null);
 
   useEffect(() => {
     if (localVideoRef.current && localStream) {
@@ -33,6 +35,82 @@ export default function VideoPanel({
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
     }
+    // Also update the popout window if it's open
+    if (popoutVideoRef.current && remoteStream) {
+      popoutVideoRef.current.srcObject = remoteStream;
+    }
+  }, [remoteStream]);
+
+  // Clean up popout window on unmount or when screen share stops
+  useEffect(() => {
+    if (!isRemoteScreenSharing && popoutWindowRef.current && !popoutWindowRef.current.closed) {
+      popoutWindowRef.current.close();
+      popoutWindowRef.current = null;
+      popoutVideoRef.current = null;
+    }
+  }, [isRemoteScreenSharing]);
+
+  useEffect(() => {
+    return () => {
+      if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
+        popoutWindowRef.current.close();
+      }
+    };
+  }, []);
+
+  /**
+   * Pop out the screen share into a separate browser window.
+   * We create a minimal HTML page with just a <video> element,
+   * then set its srcObject to the same remote MediaStream.
+   * This works because MediaStream objects can be shared within
+   * the same browsing context group (same origin, opener relationship).
+   */
+  const popOutScreenShare = useCallback(() => {
+    if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
+      // Already open — focus it
+      popoutWindowRef.current.focus();
+      return;
+    }
+
+    const popup = window.open(
+      "",
+      "screen-share-popout",
+      "width=1280,height=720,menubar=no,toolbar=no,location=no,status=no"
+    );
+
+    if (!popup) return; // popup blocked
+
+    popup.document.write(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Screen Share</title>
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body { background: #000; display: flex; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
+          video { width: 100%; height: 100%; object-fit: contain; }
+        </style>
+      </head>
+      <body>
+        <video id="popout-video" autoplay playsinline></video>
+      </body>
+      </html>
+    `);
+    popup.document.close();
+
+    const videoEl = popup.document.getElementById("popout-video");
+    if (videoEl && remoteStream) {
+      videoEl.srcObject = remoteStream;
+    }
+
+    popoutWindowRef.current = popup;
+    popoutVideoRef.current = videoEl;
+
+    // Clean up ref when popup is closed by the user
+    popup.addEventListener("beforeunload", () => {
+      popoutWindowRef.current = null;
+      popoutVideoRef.current = null;
+    });
   }, [remoteStream]);
 
   return (
@@ -73,11 +151,21 @@ export default function VideoPanel({
         </div>
       )}
 
-      {/* Remote screen sharing indicator */}
+      {/* Remote screen sharing indicator + pop-out button */}
       {isRemoteScreenSharing && remoteStream && isRemoteVideoEnabled && (
-        <div className="absolute top-3 left-3 flex items-center gap-1.5 bg-blue-600/80 backdrop-blur-sm text-white text-xs font-medium px-3 py-1.5 rounded-lg">
-          <MonitorUp className="w-3.5 h-3.5" />
-          Presenting
+        <div className="absolute top-3 left-3 right-3 flex items-center justify-between">
+          <div className="flex items-center gap-1.5 bg-blue-600/80 backdrop-blur-sm text-white text-xs font-medium px-3 py-1.5 rounded-lg">
+            <MonitorUp className="w-3.5 h-3.5" />
+            Presenting
+          </div>
+          <button
+            onClick={popOutScreenShare}
+            className="flex items-center gap-1.5 bg-gray-800/80 hover:bg-gray-700/80 backdrop-blur-sm text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+            title="Pop out to separate window"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Pop out</span>
+          </button>
         </div>
       )}
 
