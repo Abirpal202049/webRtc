@@ -11,7 +11,6 @@ import {
   Info,
   X,
 } from "lucide-react";
-import { useWebRTCStats } from "../hooks/useWebRTCStats";
 import Sparkline from "./Sparkline";
 
 /**
@@ -251,9 +250,35 @@ function qualityColor(value, thresholds) {
   return "text-gray-300";
 }
 
-function fmt(val, decimals = 0, suffix = "") {
+/**
+ * Format a number with full precision — no hiding decimals.
+ * For values near zero, shows all significant digits so you can see
+ * exactly what's happening (e.g., 0.000045% instead of 0.00%).
+ *
+ * @param {number} val - The value
+ * @param {string} suffix - Suffix like " ms", " kbps", "%"
+ * @param {number} minDecimals - Minimum decimal places for non-tiny values
+ */
+function fmt(val, minDecimals = 0, suffix = "") {
   if (val == null) return "--";
-  return `${val.toFixed(decimals)}${suffix}`;
+
+  // For very small non-zero values, show full significant digits
+  if (val !== 0 && Math.abs(val) < 0.01) {
+    // Use toPrecision to show meaningful digits for tiny numbers
+    return `${val.toPrecision(3)}${suffix}`;
+  }
+
+  // For values < 1 but >= 0.01, show enough decimals
+  if (val !== 0 && Math.abs(val) < 1) {
+    return `${val.toFixed(Math.max(minDecimals, 4))}${suffix}`;
+  }
+
+  // For larger values, use requested decimal places but at least 2 for fractional values
+  if (val !== 0 && val % 1 !== 0) {
+    return `${val.toFixed(Math.max(minDecimals, 2))}${suffix}`;
+  }
+
+  return `${val.toFixed(minDecimals)}${suffix}`;
 }
 
 function MetricRow({ label, value, color = "text-gray-300", sparkData, sparkColor, infoKey, activePopover, setActivePopover }) {
@@ -302,8 +327,7 @@ function Section({ icon: Icon, title, children, defaultOpen = true }) {
 
 // ── Main Dashboard ──
 
-export default function MetricsDashboard({ peerConnectionRef }) {
-  const { stats, history } = useWebRTCStats(peerConnectionRef);
+export default function MetricsDashboard({ stats, history }) {
   const [activePopover, setActivePopover] = useState(null);
 
   if (!stats) {
@@ -466,6 +490,18 @@ export default function MetricsDashboard({ peerConnectionRef }) {
           color={stats.framesDropped > 0 ? "text-yellow-400" : "text-gray-300"}
           {...p}
         />
+        <MetricRow
+          label="Pkts recv/interval"
+          value={`${stats.deltaVideoPacketsReceived ?? 0}`}
+          color="text-gray-400"
+          {...p}
+        />
+        <MetricRow
+          label="Pkts lost/interval"
+          value={`${stats.deltaVideoPacketsLost ?? 0}`}
+          color={stats.deltaVideoPacketsLost > 0 ? "text-red-400" : "text-gray-400"}
+          {...p}
+        />
       </Section>
 
       {/* Audio */}
@@ -505,6 +541,18 @@ export default function MetricsDashboard({ peerConnectionRef }) {
           infoKey="audioPacketLoss"
           value={fmt(stats.audioPacketLossPercent, 2, "%")}
           color={qualityColor(stats.audioPacketLossPercent, { good: 1, warn: 5 })}
+          {...p}
+        />
+        <MetricRow
+          label="Pkts recv/interval"
+          value={`${stats.deltaAudioPacketsReceived ?? 0}`}
+          color="text-gray-400"
+          {...p}
+        />
+        <MetricRow
+          label="Pkts lost/interval"
+          value={`${stats.deltaAudioPacketsLost ?? 0}`}
+          color={stats.deltaAudioPacketsLost > 0 ? "text-red-400" : "text-gray-400"}
           {...p}
         />
       </Section>

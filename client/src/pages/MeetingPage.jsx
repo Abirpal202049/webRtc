@@ -10,7 +10,11 @@ import ControlBar from "../components/ControlBar";
 import ConnectionLog from "../components/ConnectionLog";
 import StateIndicator from "../components/StateIndicator";
 import MetricsDashboard from "../components/MetricsDashboard";
+import PacketVisualizer from "../components/PacketVisualizer";
+import DeviceNetworkPanel from "../components/DeviceNetworkPanel";
 import JoinRequestNotification from "../components/JoinRequestNotification";
+import { useDeviceInfo } from "../hooks/useDeviceInfo";
+import { useWebRTCStats } from "../hooks/useWebRTCStats";
 
 export default function MeetingPage() {
   const { meetingCode } = useParams();
@@ -21,6 +25,8 @@ export default function MeetingPage() {
 
   const preview = useMediaPreview();
   const webrtc = useWebRTC();
+  const { stats: webrtcStats, history: webrtcHistory } = useWebRTCStats(webrtc.peerConnectionRef);
+  const deviceInfo = useDeviceInfo(webrtc.localStreamRef);
 
   const [copied, setCopied] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
@@ -165,7 +171,9 @@ export default function MeetingPage() {
             signalingState={webrtc.signalingState}
             iceCandidates={webrtc.iceCandidates}
           />
-          <MetricsDashboard peerConnectionRef={webrtc.peerConnectionRef} />
+          <PacketVisualizer stats={webrtcStats} />
+          <MetricsDashboard stats={webrtcStats} history={webrtcHistory} />
+          <DeviceNetworkPanel deviceInfo={deviceInfo} />
           <ConnectionLog eventLog={webrtc.eventLog} />
         </div>
       </div>

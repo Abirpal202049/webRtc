@@ -114,22 +114,32 @@ export function useWebRTCStats(peerConnectionRef) {
       return (delta * 8) / (deltaMs / 1000) / 1000;
     };
 
+    // Compute packet deltas for the packet visualizer
+    const computeDelta = (current, previous) => {
+      if (current == null || previous == null) return 0;
+      const d = current - previous;
+      return d < 0 ? 0 : d;
+    };
+
     const videoSendKbps = computeKbps(outboundVideo?.bytesSent, prev?.outboundVideoBytesSent);
     const videoRecvKbps = computeKbps(inboundVideo?.bytesReceived, prev?.inboundVideoBytesReceived);
     const audioSendKbps = computeKbps(outboundAudio?.bytesSent, prev?.outboundAudioBytesSent);
     const audioRecvKbps = computeKbps(inboundAudio?.bytesReceived, prev?.inboundAudioBytesReceived);
 
-    // Packet loss percentage
-    const videoLostTotal = inboundVideo?.packetsLost ?? 0;
-    const videoRecvTotal = inboundVideo?.packetsReceived ?? 0;
-    const videoLossPercent = (videoLostTotal + videoRecvTotal) > 0
-      ? (videoLostTotal / (videoLostTotal + videoRecvTotal)) * 100
+    // Packet loss — INTERVAL-BASED (last 1.5s), not cumulative session average.
+    // Cumulative averages hide real-time spikes. If you lost 5 packets out of
+    // 50,000 total, cumulative shows 0.01%. But if those 5 were all in the
+    // last 1.5s out of 100 received, the real-time loss is 5% — that's what matters.
+    const deltaVideoLost = computeDelta(inboundVideo?.packetsLost, prev?.inboundVideoPacketsLost);
+    const deltaVideoRecv = computeDelta(inboundVideo?.packetsReceived, prev?.inboundVideoPacketsReceived);
+    const videoLossPercent = (deltaVideoLost + deltaVideoRecv) > 0
+      ? (deltaVideoLost / (deltaVideoLost + deltaVideoRecv)) * 100
       : 0;
 
-    const audioLostTotal = inboundAudio?.packetsLost ?? 0;
-    const audioRecvTotal = inboundAudio?.packetsReceived ?? 0;
-    const audioLossPercent = (audioLostTotal + audioRecvTotal) > 0
-      ? (audioLostTotal / (audioLostTotal + audioRecvTotal)) * 100
+    const deltaAudioLost = computeDelta(inboundAudio?.packetsLost, prev?.inboundAudioPacketsLost);
+    const deltaAudioRecv = computeDelta(inboundAudio?.packetsReceived, prev?.inboundAudioPacketsReceived);
+    const audioLossPercent = (deltaAudioLost + deltaAudioRecv) > 0
+      ? (deltaAudioLost / (deltaAudioLost + deltaAudioRecv)) * 100
       : 0;
 
     const rtt = activePair?.currentRoundTripTime != null
@@ -175,6 +185,14 @@ export function useWebRTCStats(peerConnectionRef) {
       audioJitter: inboundAudio?.jitter != null ? inboundAudio.jitter * 1000 : null,
       audioPacketLossPercent: audioLossPercent,
       audioCodecReceived: resolveCodec(inboundAudio?.codecId),
+
+      // Packet deltas (for packet visualizer)
+      deltaVideoPacketsSent: computeDelta(outboundVideo?.packetsSent, prev?.outboundVideoPacketsSent),
+      deltaAudioPacketsSent: computeDelta(outboundAudio?.packetsSent, prev?.outboundAudioPacketsSent),
+      deltaVideoPacketsReceived: computeDelta(inboundVideo?.packetsReceived, prev?.inboundVideoPacketsReceived),
+      deltaAudioPacketsReceived: computeDelta(inboundAudio?.packetsReceived, prev?.inboundAudioPacketsReceived),
+      deltaVideoPacketsLost: computeDelta(inboundVideo?.packetsLost, prev?.inboundVideoPacketsLost),
+      deltaAudioPacketsLost: computeDelta(inboundAudio?.packetsLost, prev?.inboundAudioPacketsLost),
     };
 
     setStats(snapshot);
@@ -194,6 +212,12 @@ export function useWebRTCStats(peerConnectionRef) {
       outboundAudioBytesSent: outboundAudio?.bytesSent,
       inboundVideoBytesReceived: inboundVideo?.bytesReceived,
       inboundAudioBytesReceived: inboundAudio?.bytesReceived,
+      outboundVideoPacketsSent: outboundVideo?.packetsSent,
+      outboundAudioPacketsSent: outboundAudio?.packetsSent,
+      inboundVideoPacketsReceived: inboundVideo?.packetsReceived,
+      inboundAudioPacketsReceived: inboundAudio?.packetsReceived,
+      inboundVideoPacketsLost: inboundVideo?.packetsLost,
+      inboundAudioPacketsLost: inboundAudio?.packetsLost,
     };
     prevTimestampRef.current = now;
   }, [peerConnectionRef]);

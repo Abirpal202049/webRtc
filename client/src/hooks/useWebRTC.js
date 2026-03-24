@@ -660,6 +660,7 @@ export function useWebRTC() {
 
   return {
     peerConnectionRef,
+    localStreamRef,
     localStream,
     remoteStream,
     connectionState,
