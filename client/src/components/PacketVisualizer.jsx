@@ -124,7 +124,8 @@ function PacketAnatomy({ particle }) {
 
 function ProtocolStack({ particle }) {
   const layers = [
-    { name: "Application", detail: `WebRTC ${particle.meta.mediaType}`, color: "bg-blue-500/20 border-blue-500/30 text-blue-400" },
+    { name: "Application", detail: `WebRTC ${particle.meta.mediaType} (via SFU)`, color: "bg-blue-500/20 border-blue-500/30 text-blue-400" },
+    { name: "mediasoup", detail: "SFU — selective forwarding", color: "bg-pink-500/20 border-pink-500/30 text-pink-400" },
     { name: "Codec", detail: particle.meta.codec || "?", color: "bg-indigo-500/20 border-indigo-500/30 text-indigo-400" },
     { name: "SRTP", detail: "Encrypted media transport", color: "bg-purple-500/20 border-purple-500/30 text-purple-400" },
     { name: "DTLS", detail: "Key exchange & encryption", color: "bg-yellow-500/20 border-yellow-500/30 text-yellow-400" },
@@ -257,7 +258,7 @@ function PacketInspector({ particle, onClose }) {
               </div>
             </div>
 
-            {/* Progress bar */}
+            {/* Progress bar — SFU model */}
             <div className="mt-2">
               <div className="w-full h-1.5 bg-gray-700 rounded-full overflow-hidden">
                 <div
@@ -266,9 +267,17 @@ function PacketInspector({ particle, onClose }) {
                 />
               </div>
               <div className="flex justify-between text-[8px] text-gray-600 mt-0.5">
-                <span>{m.direction === "Sending" ? "You" : "Peer"}</span>
-                <span>{m.direction === "Sending" ? "Peer" : "You"}</span>
+                <span>{m.direction === "Sending" ? "You" : "SFU Server"}</span>
+                <span>{m.direction === "Sending" ? "SFU Server" : "You"}</span>
               </div>
+            </div>
+
+            {/* SFU routing explanation */}
+            <div className="mt-2 p-2 bg-blue-500/10 border border-blue-500/20 rounded text-[10px] text-blue-300">
+              <span className="font-medium">SFU Model: </span>
+              {m.direction === "Sending"
+                ? "This packet travels from you to the mediasoup server. The server then forwards it to all other participants — you only upload once."
+                : "This packet was forwarded to you by the SFU server, which received it from another participant. Each participant downloads N-1 streams."}
             </div>
 
             {particle.isLost && (
@@ -352,7 +361,7 @@ function FilterControls({ filters, setFilters }) {
 
 // ── Main Component ──
 
-export default function PacketVisualizer({ stats }) {
+export default function PacketVisualizer({ stats, participantCount = 1 }) {
   const canvasRef = useRef(null);
   const engineRef = useRef(null);
   const [speed, setSpeed] = useState(1);
@@ -489,6 +498,22 @@ export default function PacketVisualizer({ stats }) {
       <p className="text-[9px] text-gray-600 mt-1 text-center">
         Click any packet to inspect — use controls above to filter and adjust speed
       </p>
+
+      {/* SFU Scaling Info */}
+      {participantCount > 1 && (
+        <div className="mt-2 bg-indigo-500/10 border border-indigo-500/20 rounded-lg px-3 py-2">
+          <p className="text-[10px] font-medium text-indigo-400 mb-1">SFU Routing ({participantCount} participants)</p>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[9px] font-mono">
+            <span className="text-gray-500">Your uploads: <span className="text-indigo-300">1 stream → server</span></span>
+            <span className="text-gray-500">Your downloads: <span className="text-indigo-300">{participantCount - 1} stream{participantCount - 1 !== 1 ? "s" : ""} ← server</span></span>
+            <span className="text-gray-500">Server inbound: <span className="text-indigo-300">{participantCount} stream{participantCount !== 1 ? "s" : ""}</span></span>
+            <span className="text-gray-500">Server outbound: <span className="text-indigo-300">{participantCount * (participantCount - 1)} stream{participantCount * (participantCount - 1) !== 1 ? "s" : ""}</span></span>
+          </div>
+          <p className="text-[8px] text-gray-600 mt-1">
+            Without SFU (mesh): each person would upload {participantCount - 1}x — {participantCount * (participantCount - 1) / 2} total P2P connections needed
+          </p>
+        </div>
+      )}
 
       {/* Session counters */}
       {showCounters && <SessionCounters stats={stats} sessionRef={sessionRef} />}

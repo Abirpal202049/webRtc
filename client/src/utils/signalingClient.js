@@ -1,37 +1,19 @@
 /**
  * ============================================================================
- * SIGNALING CLIENT — WebSocket Wrapper for Peer Discovery (Phase 2)
+ * SIGNALING CLIENT — WebSocket Wrapper for SFU Signaling (Phase 3)
  * ============================================================================
  *
- * This is NOT part of WebRTC itself.
- *
- * Phase 2 changes:
- * - No longer auto-joins on socket open — the caller decides whether to
- *   send "create" (host) or "join-request" (joiner) after connecting.
- * - New message types for admission control: create, join-request, admit, deny.
- * - The existing offer/answer/ice-candidate relay is unchanged.
+ * Phase 3 changes:
+ * - Added mediasoup signaling messages: transport creation, produce, consume
+ * - Admission control messages (create, join-request, admit, deny) unchanged
+ * - Removed raw SDP offer/answer relay (mediasoup handles WebRTC internally)
  * ============================================================================
  */
 
 /**
  * Creates a signaling client that connects to the WebSocket signaling server.
  *
- * @param {object} callbacks - Event handlers:
- *   - onConnected: WebSocket connection established
- *   - onCreated: Room created successfully (creator)
- *   - onRoomExists: Room already exists (creator)
- *   - onJoinRequest: Someone wants to join (creator receives { pendingId, displayName })
- *   - onWaiting: Join request is pending (joiner)
- *   - onAdmitted: Creator let you in (joiner)
- *   - onDenied: Creator rejected you (joiner)
- *   - onRoomNotFound: No such room exists
- *   - onRoomFull: Room already has 2 people
- *   - onPeerJoined: Peer was admitted, start WebRTC (creator)
- *   - onPeerLeft: Other peer disconnected
- *   - onOffer: Received SDP offer
- *   - onAnswer: Received SDP answer
- *   - onIceCandidate: Received ICE candidate
- *   - onLog: Every event, for the educational log panel
+ * @param {object} callbacks - Event handlers for all message types.
  */
 export function createSignalingClient(callbacks) {
   const wsUrl = import.meta.env.VITE_SIGNALING_URL || `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:8080`;
@@ -50,7 +32,7 @@ export function createSignalingClient(callbacks) {
     const message = JSON.parse(event.data);
 
     switch (message.type) {
-      // ── Creator messages ──
+      // ── Room management ──
 
       case "created":
         log("SIGNALING", `Room "${message.roomId}" created — waiting for participants`);
@@ -67,10 +49,8 @@ export function createSignalingClient(callbacks) {
         callbacks.onJoinRequest?.(message);
         break;
 
-      // ── Joiner messages ──
-
       case "waiting":
-        log("SIGNALING", `Join request sent — waiting for host approval`);
+        log("SIGNALING", "Join request sent — waiting for host approval");
         callbacks.onWaiting?.(message);
         break;
 
@@ -90,44 +70,96 @@ export function createSignalingClient(callbacks) {
         break;
 
       case "room-full":
-        log("ERROR", "Room is full (max 2 people)");
+        log("ERROR", "Room is full (max 10 people)");
         callbacks.onRoomFull?.();
         break;
 
-      // ── Shared messages (unchanged from Phase 1) ──
+      case "room-closed":
+        log("SIGNALING", "Room was closed by the host");
+        callbacks.onRoomClosed?.();
+        break;
+
+      // ── Peer events ──
 
       case "peer-joined":
-        log("SIGNALING", "Peer joined — creating WebRTC offer");
-        callbacks.onPeerJoined?.();
+        log("SIGNALING", `${message.displayName || "Someone"} joined the meeting`);
+        callbacks.onPeerJoined?.(message);
         break;
 
       case "peer-left":
-        log("SIGNALING", "Peer left the room");
-        callbacks.onPeerLeft?.();
+        log("SIGNALING", "A participant left the meeting");
+        callbacks.onPeerLeft?.(message);
         break;
 
-      case "offer":
-        log("SIGNALING", "Received SDP offer from remote peer");
-        callbacks.onOffer?.(message);
+      case "existing-peers":
+        log("SIGNALING", `${message.peers.length} participant(s) already in the meeting`);
+        callbacks.onExistingPeers?.(message);
         break;
 
-      case "answer":
-        log("SIGNALING", "Received SDP answer from remote peer");
-        callbacks.onAnswer?.(message);
+      // ── mediasoup signaling ──
+
+      case "router-rtp-capabilities":
+        log("MEDIASOUP", "Received router RTP capabilities");
+        callbacks.onRouterRtpCapabilities?.(message);
         break;
 
-      case "ice-candidate":
-        log("ICE", `Received remote ICE candidate: ${message.candidate?.candidate?.split(" ")[7] || "unknown"} ${message.candidate?.candidate?.split(" ")[2] || ""}`);
-        callbacks.onIceCandidate?.(message);
+      case "transport-created":
+        log("MEDIASOUP", `Transport created (${message.direction})`);
+        callbacks.onTransportCreated?.(message);
         break;
+
+      case "transport-connected":
+        log("MEDIASOUP", "Transport connected");
+        callbacks.onTransportConnected?.(message);
+        break;
+
+      case "produced":
+        log("MEDIASOUP", `Producer created: ${message.producerId}`);
+        callbacks.onProduced?.(message);
+        break;
+
+      case "consumed":
+        log("MEDIASOUP", `Consumer created: ${message.consumerId}`);
+        callbacks.onConsumed?.(message);
+        break;
+
+      case "consume-failed":
+        log("ERROR", `Cannot consume producer: ${message.reason}`);
+        callbacks.onConsumeFailed?.(message);
+        break;
+
+      case "new-producer":
+        log("MEDIASOUP", `New producer from peer ${message.peerId} (${message.kind})`);
+        callbacks.onNewProducer?.(message);
+        break;
+
+      case "producer-closed":
+        log("MEDIASOUP", "A producer was closed");
+        callbacks.onProducerClosed?.(message);
+        break;
+
+      case "producer-paused":
+        callbacks.onProducerPaused?.(message);
+        break;
+
+      case "producer-resumed":
+        callbacks.onProducerResumed?.(message);
+        break;
+
+      case "preferred-layers-set":
+        log("MEDIASOUP", `Layer switched to spatial=${message.spatialLayer}`);
+        callbacks.onPreferredLayersSet?.(message);
+        break;
+
+      // ── Media state (relayed with peerId) ──
 
       case "media-state":
-        log("MEDIA", `Remote peer camera: ${message.video ? "ON" : "OFF"}`);
+        log("MEDIA", `Peer ${message.peerId}: camera ${message.video ? "ON" : "OFF"}`);
         callbacks.onMediaState?.(message);
         break;
 
       case "screen-share-state":
-        log("MEDIA", `Remote peer screen share: ${message.sharing ? "STARTED" : "STOPPED"}`);
+        log("MEDIA", `Peer ${message.peerId}: screen share ${message.sharing ? "STARTED" : "STOPPED"}`);
         callbacks.onScreenShareState?.(message);
         break;
 
@@ -153,11 +185,16 @@ export function createSignalingClient(callbacks) {
     }
   }
 
-  // ── Creator actions ──
+  // ── Room management ──
 
-  function sendCreate(roomId) {
-    log("SIGNALING", `Creating room "${roomId}"`);
-    send({ type: "create", roomId });
+  function sendCreate(roomId, displayName, maxParticipants) {
+    log("SIGNALING", `Creating room "${roomId}" (max: ${maxParticipants || 10})`);
+    send({ type: "create", roomId, displayName, maxParticipants });
+  }
+
+  function sendJoinRequest(roomId, displayName) {
+    log("SIGNALING", `Requesting to join room "${roomId}"`);
+    send({ type: "join-request", roomId, displayName });
   }
 
   function sendAdmit(pendingId) {
@@ -170,24 +207,49 @@ export function createSignalingClient(callbacks) {
     send({ type: "deny", pendingId });
   }
 
-  // ── Joiner actions ──
+  // ── mediasoup signaling ──
 
-  function sendJoinRequest(roomId, displayName) {
-    log("SIGNALING", `Requesting to join room "${roomId}"`);
-    send({ type: "join-request", roomId, displayName });
+  function sendGetRouterRtpCapabilities() {
+    send({ type: "get-router-rtp-capabilities" });
   }
 
-  // ── WebRTC relay (unchanged from Phase 1) ──
-
-  function sendOffer(sdp) {
-    log("SIGNALING", "Sending SDP offer to remote peer");
-    send({ type: "offer", sdp });
+  function sendCreateTransport(direction) {
+    send({ type: "create-transport", direction });
   }
 
-  function sendAnswer(sdp) {
-    log("SIGNALING", "Sending SDP answer to remote peer");
-    send({ type: "answer", sdp });
+  function sendConnectTransport(transportId, dtlsParameters) {
+    send({ type: "connect-transport", transportId, dtlsParameters });
   }
+
+  function sendProduce(transportId, kind, rtpParameters, appData) {
+    send({ type: "produce", transportId, kind, rtpParameters, appData });
+  }
+
+  function sendConsume(producerId, rtpCapabilities, transportId) {
+    send({ type: "consume", producerId, rtpCapabilities, transportId });
+  }
+
+  function sendResumeConsumer(consumerId) {
+    send({ type: "resume-consumer", consumerId });
+  }
+
+  function sendPauseProducer(producerId) {
+    send({ type: "pause-producer", producerId });
+  }
+
+  function sendResumeProducer(producerId) {
+    send({ type: "resume-producer", producerId });
+  }
+
+  function sendCloseProducer(producerId) {
+    send({ type: "close-producer", producerId });
+  }
+
+  function sendSetPreferredLayers(consumerId, spatialLayer, temporalLayer) {
+    send({ type: "set-preferred-layers", consumerId, spatialLayer, temporalLayer });
+  }
+
+  // ── Media state ──
 
   function sendMediaState(video, audio) {
     log("MEDIA", `Sending media state: camera ${video ? "ON" : "OFF"}`);
@@ -199,25 +261,31 @@ export function createSignalingClient(callbacks) {
     send({ type: "screen-share-state", sharing });
   }
 
-  function sendIceCandidate(candidate) {
-    log("ICE", `Sending local ICE candidate: ${candidate.candidate?.split(" ")[7] || "unknown"} ${candidate.candidate?.split(" ")[2] || ""}`);
-    send({ type: "ice-candidate", candidate });
-  }
-
   function disconnect() {
     socket.close();
   }
 
   return {
+    // Room management
     sendCreate,
     sendJoinRequest,
     sendAdmit,
     sendDeny,
-    sendOffer,
-    sendAnswer,
-    sendIceCandidate,
+    // mediasoup
+    sendGetRouterRtpCapabilities,
+    sendCreateTransport,
+    sendConnectTransport,
+    sendProduce,
+    sendConsume,
+    sendResumeConsumer,
+    sendPauseProducer,
+    sendResumeProducer,
+    sendCloseProducer,
+    sendSetPreferredLayers,
+    // Media state
     sendMediaState,
     sendScreenShareState,
+    // Connection
     disconnect,
   };
 }

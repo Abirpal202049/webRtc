@@ -308,8 +308,8 @@ export class ParticleEngine {
     ctx.font = "9px sans-serif";
     ctx.textAlign = "center";
     ctx.fillStyle = "rgba(255,255,255,0.12)";
-    ctx.fillText("SENDING →", w / 2, h * 0.1);
-    ctx.fillText("← RECEIVING", w / 2, h * 0.55);
+    ctx.fillText("YOU → SFU SERVER", w / 2, h * 0.1);
+    ctx.fillText("SFU SERVER → YOU", w / 2, h * 0.55);
 
     // Speed indicator
     if (this.speedMultiplier !== 1) {
@@ -320,9 +320,9 @@ export class ParticleEngine {
       ctx.fillText(label, w - 8, h * 0.1);
     }
 
-    // Endpoints
+    // Endpoints — SFU model: You ↔ Server (not peer-to-peer)
     this._drawEndpoint(ctx, 16, h / 2, "You");
-    this._drawEndpoint(ctx, w - 16, h / 2, "Peer");
+    this._drawEndpoint(ctx, w - 16, h / 2, "SFU");
 
     // Particles
     for (const p of this.particles) {

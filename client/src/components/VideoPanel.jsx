@@ -1,51 +1,46 @@
-import { useEffect, useRef, useCallback, useState } from "react";
-import { UserRound, VideoOff, MonitorUp, ExternalLink, Maximize, Minimize } from "lucide-react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { MonitorUp, ExternalLink, Maximize, Minimize } from "lucide-react";
+import ParticipantTile from "./ParticipantTile";
 
 /**
- * VideoPanel — Displays local and remote video streams.
+ * VideoPanel — Multi-participant video grid with presentation mode.
  *
- * Screen share handling:
- * - Sharer sees a preview of what they're sharing in the local PiP
- * - Viewer sees the shared screen as the main view with object-contain
- * - Both can pop out the screen share into a separate window
- * - Both can enlarge to fullscreen
+ * Grid layout adapts to participant count:
+ * - 1: centered
+ * - 2: side-by-side
+ * - 3-4: 2×2
+ * - 5-6: 3×2
+ * - 7-9: 3×3
+ * - 10: 4×3
+ *
+ * When someone is screen-sharing, switches to presentation mode:
+ * screen share takes ~75% of space, camera tiles go into a sidebar.
  */
 export default function VideoPanel({
   localStream,
-  remoteStream,
-  connectionState,
-  isRemoteVideoEnabled,
+  participants,
   isVideoEnabled,
+  isAudioEnabled,
   isScreenSharing,
-  isRemoteScreenSharing,
   screenStream,
 }) {
-  const localVideoRef = useRef(null);
-  const remoteVideoRef = useRef(null);
-  const screenPreviewRef = useRef(null);
   const containerRef = useRef(null);
+  const screenPreviewRef = useRef(null);
   const popoutWindowRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Attach local camera stream
-  useEffect(() => {
-    if (localVideoRef.current && localStream) {
-      localVideoRef.current.srcObject = localStream;
+  // Find who is screen sharing (including self)
+  const screenSharer = useMemo(() => {
+    if (isScreenSharing) return { type: "local", stream: screenStream };
+    for (const [peerId, peer] of participants) {
+      if (peer.isScreenSharing && peer.screenTrack) {
+        return { type: "remote", peerId, track: peer.screenTrack };
+      }
     }
-  }, [localStream]);
+    return null;
+  }, [isScreenSharing, screenStream, participants]);
 
-  // Attach remote stream
-  useEffect(() => {
-    if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
-    }
-    // Keep global in sync for popout
-    if (remoteStream) {
-      window.__popoutStream = remoteStream;
-    }
-  }, [remoteStream]);
-
-  // Attach screen share preview for the sharer
+  // Attach screen preview for local sharer
   useEffect(() => {
     if (screenPreviewRef.current && screenStream) {
       screenPreviewRef.current.srcObject = screenStream;
@@ -54,60 +49,25 @@ export default function VideoPanel({
 
   // Close popout when screen share stops
   useEffect(() => {
-    const noScreenShare = !isRemoteScreenSharing && !isScreenSharing;
-    if (noScreenShare && popoutWindowRef.current && !popoutWindowRef.current.closed) {
+    if (!screenSharer && popoutWindowRef.current && !popoutWindowRef.current.closed) {
       popoutWindowRef.current.postMessage({ type: "popout-stream-ended" }, "*");
       popoutWindowRef.current = null;
     }
-  }, [isRemoteScreenSharing, isScreenSharing]);
+  }, [screenSharer]);
 
-  // Listen for fullscreen changes
   useEffect(() => {
     const handleFsChange = () => setIsFullscreen(!!document.fullscreenElement);
     document.addEventListener("fullscreenchange", handleFsChange);
     return () => document.removeEventListener("fullscreenchange", handleFsChange);
   }, []);
 
-  // Clean up on unmount
   useEffect(() => {
     return () => {
       if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
         popoutWindowRef.current.close();
       }
-      delete window.__popoutStream;
     };
   }, []);
-
-  /**
-   * Pop out into a separate browser window.
-   * For the sharer: pops out their own screen stream.
-   * For the viewer: pops out the remote stream.
-   */
-  const popOutScreenShare = useCallback(() => {
-    if (popoutWindowRef.current && !popoutWindowRef.current.closed) {
-      popoutWindowRef.current.focus();
-      return;
-    }
-
-    // Set the appropriate stream — sharer uses screenStream, viewer uses remoteStream
-    window.__popoutStream = isScreenSharing ? screenStream : remoteStream;
-
-    const popup = window.open(
-      "/popout",
-      "screen-share-popout",
-      "width=1280,height=720,menubar=no,toolbar=no,location=no,status=no"
-    );
-
-    if (!popup) return;
-    popoutWindowRef.current = popup;
-
-    const checkClosed = setInterval(() => {
-      if (popup.closed) {
-        popoutWindowRef.current = null;
-        clearInterval(checkClosed);
-      }
-    }, 500);
-  }, [remoteStream, screenStream, isScreenSharing]);
 
   const toggleFullscreen = useCallback(() => {
     if (!containerRef.current) return;
@@ -118,86 +78,59 @@ export default function VideoPanel({
     }
   }, []);
 
-  const showScreenShareControls = isRemoteScreenSharing || isScreenSharing;
+  // Build the list of all tiles (local + remote participants)
+  const tiles = useMemo(() => {
+    const result = [];
 
-  return (
-    <div ref={containerRef} className="relative w-full h-full bg-gray-950 rounded-2xl overflow-hidden">
-      {/* Remote video — ALWAYS mounted for audio continuity */}
-      <video
-        ref={remoteVideoRef}
-        autoPlay
-        playsInline
-        className={`w-full h-full ${
-          isRemoteScreenSharing || isFullscreen ? "object-contain bg-black" : "object-cover"
-        } ${remoteStream && isRemoteVideoEnabled ? "" : "hidden"}`}
-      />
+    // Local tile
+    const localVideoTrack = localStream?.getVideoTracks()[0] || null;
+    const localAudioTrack = localStream?.getAudioTracks()[0] || null;
+    result.push({
+      key: "local",
+      isLocal: true,
+      displayName: "You",
+      videoTrack: localVideoTrack,
+      audioTrack: localAudioTrack,
+      isVideoEnabled,
+      isAudioEnabled,
+      isScreenSharing,
+    });
 
-      {/* Placeholder overlay — shown when remote video is not active */}
-      {!(remoteStream && isRemoteVideoEnabled) && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500">
-          {remoteStream ? (
-            <>
-              <VideoOff className="w-16 h-16 sm:w-20 sm:h-20 mb-4 opacity-30" />
-              <p className="text-base sm:text-lg font-medium">Camera is turned off</p>
-            </>
-          ) : (
-            <>
-              <UserRound className="w-16 h-16 sm:w-20 sm:h-20 mb-4 opacity-30" />
-              <p className="text-base sm:text-lg font-medium">
-                {connectionState === "connecting"
-                  ? "Connecting to peer..."
-                  : connectionState === "connected"
-                    ? "Waiting for remote video..."
-                    : "Waiting for someone to join..."}
-              </p>
-              <p className="text-xs sm:text-sm text-gray-600 mt-2">
-                Share the meeting code with another person
-              </p>
-            </>
-          )}
-        </div>
-      )}
+    // Remote tiles
+    for (const [peerId, peer] of participants) {
+      result.push({
+        key: peerId,
+        isLocal: false,
+        displayName: peer.displayName || "Guest",
+        videoTrack: peer.videoTrack,
+        audioTrack: peer.audioTrack,
+        isVideoEnabled: peer.isVideoEnabled !== false,
+        isAudioEnabled: peer.isAudioEnabled !== false,
+        isScreenSharing: peer.isScreenSharing || false,
+      });
+    }
 
-      {/* Top bar — presenting label + video controls */}
-      {(remoteStream && isRemoteVideoEnabled) && (
-        <div className="absolute top-3 left-3 right-3 flex items-center justify-between">
-          {/* Presenting label — only during screen share */}
-          {showScreenShareControls ? (
-            <div className="flex items-center gap-1.5 bg-blue-600/80 backdrop-blur-sm text-white text-xs font-medium px-3 py-1.5 rounded-lg">
-              <MonitorUp className="w-3.5 h-3.5" />
-              {isScreenSharing ? "You are presenting" : "Presenting"}
-            </div>
-          ) : (
-            <div />
-          )}
+    return result;
+  }, [localStream, participants, isVideoEnabled, isAudioEnabled, isScreenSharing]);
 
-          {/* Pop-out and enlarge — always available when there's remote video */}
-          <div className="flex items-center gap-2 opacity-0 hover:opacity-100 focus-within:opacity-100 transition-opacity">
-            <button
-              onClick={popOutScreenShare}
-              className="flex items-center gap-1.5 bg-gray-800/80 hover:bg-gray-700/80 backdrop-blur-sm text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
-              title="Pop out to separate window"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Pop out</span>
-            </button>
-            <button
-              onClick={toggleFullscreen}
-              className="flex items-center gap-1.5 bg-gray-800/80 hover:bg-gray-700/80 backdrop-blur-sm text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
-              title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
-            >
-              {isFullscreen ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
-              <span className="hidden sm:inline">{isFullscreen ? "Exit" : "Enlarge"}</span>
-            </button>
-          </div>
-        </div>
-      )}
+  // Compute grid columns based on participant count
+  const gridCols = useMemo(() => {
+    const count = tiles.length;
+    if (count <= 1) return "grid-cols-1";
+    if (count <= 2) return "grid-cols-2";
+    if (count <= 4) return "grid-cols-2";
+    if (count <= 6) return "grid-cols-3";
+    if (count <= 9) return "grid-cols-3";
+    return "grid-cols-4";
+  }, [tiles.length]);
 
-      {/* Local PiP — shows screen preview when sharing, camera otherwise */}
-      {localStream && (
-        <div className="absolute bottom-3 right-3 w-28 h-20 sm:w-48 sm:h-36 rounded-lg sm:rounded-xl overflow-hidden border-2 border-gray-700 shadow-2xl bg-gray-900">
-          {isScreenSharing && screenStream ? (
-            // Sharer sees a preview of what they're sharing
+  // ── Presentation mode (someone is screen sharing) ──
+  if (screenSharer) {
+    return (
+      <div ref={containerRef} className="relative w-full h-full bg-gray-950 rounded-2xl overflow-hidden flex">
+        {/* Main screen share area */}
+        <div className="flex-1 relative min-w-0">
+          {screenSharer.type === "local" ? (
             <video
               ref={screenPreviewRef}
               autoPlay
@@ -205,21 +138,100 @@ export default function VideoPanel({
               muted
               className="w-full h-full object-contain bg-black"
             />
-          ) : isVideoEnabled ? (
-            <video
-              ref={localVideoRef}
-              autoPlay
-              playsInline
-              muted
-              className="w-full h-full object-cover scale-x-[-1]"
-            />
           ) : (
-            <div className="w-full h-full flex items-center justify-center bg-gray-900">
-              <VideoOff className="w-6 h-6 sm:w-8 sm:h-8 text-gray-600" />
-            </div>
+            <ScreenShareVideo track={screenSharer.track} />
           )}
+
+          {/* Presenting label + controls */}
+          <div className="absolute top-3 left-3 right-3 flex items-center justify-between">
+            <div className="flex items-center gap-1.5 bg-blue-600/80 backdrop-blur-sm text-white text-xs font-medium px-3 py-1.5 rounded-lg">
+              <MonitorUp className="w-3.5 h-3.5" />
+              {screenSharer.type === "local" ? "You are presenting" : "Presenting"}
+            </div>
+            <div className="flex items-center gap-2 opacity-0 hover:opacity-100 focus-within:opacity-100 transition-opacity">
+              <button
+                onClick={toggleFullscreen}
+                className="flex items-center gap-1.5 bg-gray-800/80 hover:bg-gray-700/80 backdrop-blur-sm text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+                title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+              >
+                {isFullscreen ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
+                <span className="hidden sm:inline">{isFullscreen ? "Exit" : "Enlarge"}</span>
+              </button>
+            </div>
+          </div>
         </div>
-      )}
+
+        {/* Sidebar with camera tiles */}
+        <div className="w-44 sm:w-52 shrink-0 flex flex-col gap-1.5 p-1.5 overflow-y-auto bg-gray-950">
+          {tiles.map((tile) => (
+            <div key={tile.key} className="aspect-video shrink-0">
+              <ParticipantTile
+                displayName={tile.displayName}
+                videoTrack={tile.videoTrack}
+                audioTrack={tile.audioTrack}
+                isVideoEnabled={tile.isVideoEnabled}
+                isAudioEnabled={tile.isAudioEnabled}
+                isLocal={tile.isLocal}
+                isScreenSharing={tile.isScreenSharing}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Normal grid mode ──
+  return (
+    <div ref={containerRef} className="relative w-full h-full bg-gray-950 rounded-2xl overflow-hidden p-1.5">
+      <div className={`grid ${gridCols} gap-1.5 w-full h-full auto-rows-fr`}>
+        {tiles.map((tile) => (
+          <ParticipantTile
+            key={tile.key}
+            displayName={tile.displayName}
+            videoTrack={tile.videoTrack}
+            audioTrack={tile.audioTrack}
+            isVideoEnabled={tile.isVideoEnabled}
+            isAudioEnabled={tile.isAudioEnabled}
+            isLocal={tile.isLocal}
+            isScreenSharing={tile.isScreenSharing}
+          />
+        ))}
+      </div>
+
+      {/* Fullscreen button */}
+      <div className="absolute top-3 right-3 opacity-0 hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        <button
+          onClick={toggleFullscreen}
+          className="flex items-center gap-1.5 bg-gray-800/80 hover:bg-gray-700/80 backdrop-blur-sm text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+          title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+        >
+          {isFullscreen ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
+          <span className="hidden sm:inline">{isFullscreen ? "Exit" : "Enlarge"}</span>
+        </button>
+      </div>
     </div>
+  );
+}
+
+/**
+ * ScreenShareVideo — Renders a remote screen share track.
+ */
+function ScreenShareVideo({ track }) {
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    if (videoRef.current && track) {
+      videoRef.current.srcObject = new MediaStream([track]);
+    }
+  }, [track]);
+
+  return (
+    <video
+      ref={videoRef}
+      autoPlay
+      playsInline
+      className="w-full h-full object-contain bg-black"
+    />
   );
 }

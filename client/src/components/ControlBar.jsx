@@ -1,4 +1,4 @@
-import { Mic, MicOff, Video, VideoOff, MonitorUp, MonitorOff, PhoneOff } from "lucide-react";
+import { Mic, MicOff, Video, VideoOff, MonitorUp, MonitorOff, PhoneOff, Users } from "lucide-react";
 
 export default function ControlBar({
   toggleAudio,
@@ -8,9 +8,18 @@ export default function ControlBar({
   isAudioEnabled,
   isVideoEnabled,
   isScreenSharing,
+  participantCount,
 }) {
   return (
     <div className="flex items-center justify-center gap-3 sm:gap-4 py-3 sm:py-4">
+      {/* Participant count */}
+      {participantCount > 0 && (
+        <div className="flex items-center gap-1 text-gray-400 text-xs font-medium mr-2">
+          <Users className="w-4 h-4" />
+          <span>{participantCount}</span>
+        </div>
+      )}
+
       {/* Mic toggle */}
       <button
         onClick={toggleAudio}
@@ -24,7 +33,7 @@ export default function ControlBar({
         {isAudioEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
       </button>
 
-      {/* Camera toggle — disabled during screen share */}
+      {/* Camera toggle */}
       <button
         onClick={toggleVideo}
         disabled={isScreenSharing}

@@ -1,22 +1,16 @@
 /**
- * useWebRTCStats — Polls RTCPeerConnection.getStats() for real-time metrics.
+ * useWebRTCStats — Polls mediasoup transport stats for real-time metrics.
  *
- * All data comes from the browser's internal WebRTC statistics API.
- * Nothing is hardcoded — every number is a live measurement.
+ * Phase 3: Adapted to work with mediasoup send/recv transports.
+ * mediasoup transports expose getStats() which returns the same
+ * RTCStatsReport format as RTCPeerConnection.getStats().
  *
- * The getStats() API returns an RTCStatsReport (a Map of stat objects).
- * Each object has a `type` field: "candidate-pair", "outbound-rtp",
- * "inbound-rtp", "codec", "local-candidate", "remote-candidate", etc.
- *
- * We poll at 1.5-second intervals and compute:
- * - Bitrates by delta-ing bytesSent/bytesReceived between polls
- * - Packet loss as a percentage of total packets
- * - History arrays (last 30 samples = ~45 seconds) for sparklines
+ * Accepts sendTransportRef and recvTransportRef instead of peerConnectionRef.
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
 
-const HISTORY_LENGTH = 30;
+const HISTORY_LENGTH = 40; // ~60 seconds at 1.5s intervals
 const POLL_INTERVAL = 1500;
 
 function pushHistory(arr, val) {
@@ -25,7 +19,7 @@ function pushHistory(arr, val) {
   return next;
 }
 
-export function useWebRTCStats(peerConnectionRef) {
+export function useWebRTCStats(sendTransportRef, recvTransportRef) {
   const [stats, setStats] = useState(null);
   const [history, setHistory] = useState({
     rtt: [],
@@ -34,56 +28,75 @@ export function useWebRTCStats(peerConnectionRef) {
     audioJitter: [],
     videoFpsRecv: [],
     packetLoss: [],
+    availableBitrate: [],
+    qualityLimitation: [],
   });
 
   const prevRef = useRef(null);
   const prevTimestampRef = useRef(null);
 
   const collectStats = useCallback(async () => {
-    const pc = peerConnectionRef?.current;
-    if (!pc || pc.connectionState !== "connected") {
-      return;
-    }
+    const sendTransport = sendTransportRef?.current;
+    const recvTransport = recvTransportRef?.current;
 
-    let report;
+    if (!sendTransport && !recvTransport) return;
+
+    // Collect stats from both transports
+    let sendReport = null;
+    let recvReport = null;
+
     try {
-      report = await pc.getStats();
-    } catch {
-      return;
-    }
+      if (sendTransport && sendTransport.connectionState === "connected") {
+        sendReport = await sendTransport.getStats();
+      }
+    } catch { /* transport may be closing */ }
+
+    try {
+      if (recvTransport && recvTransport.connectionState === "connected") {
+        recvReport = await recvTransport.getStats();
+      }
+    } catch { /* transport may be closing */ }
+
+    if (!sendReport && !recvReport) return;
 
     const now = Date.now();
     const prev = prevRef.current;
     const prevTs = prevTimestampRef.current;
     const deltaMs = prevTs ? now - prevTs : 0;
 
-    // Categorize stats
     let activePair = null;
     let outboundVideo = null;
     let outboundAudio = null;
     let inboundVideo = null;
     let inboundAudio = null;
 
-    report.forEach((stat) => {
-      switch (stat.type) {
-        case "candidate-pair":
-          if (stat.state === "succeeded" && stat.nominated) activePair = stat;
-          break;
-        case "outbound-rtp":
-          if (stat.kind === "video") outboundVideo = stat;
-          else if (stat.kind === "audio") outboundAudio = stat;
-          break;
-        case "inbound-rtp":
-          if (stat.kind === "video") inboundVideo = stat;
-          else if (stat.kind === "audio") inboundAudio = stat;
-          break;
-      }
-    });
+    // Process send transport stats
+    const processReport = (report) => {
+      if (!report) return;
+      report.forEach((stat) => {
+        switch (stat.type) {
+          case "candidate-pair":
+            if (stat.state === "succeeded" && stat.nominated && !activePair) activePair = stat;
+            break;
+          case "outbound-rtp":
+            if (stat.kind === "video" && !outboundVideo) outboundVideo = stat;
+            else if (stat.kind === "audio" && !outboundAudio) outboundAudio = stat;
+            break;
+          case "inbound-rtp":
+            if (stat.kind === "video" && !inboundVideo) inboundVideo = stat;
+            else if (stat.kind === "audio" && !inboundAudio) inboundAudio = stat;
+            break;
+        }
+      });
+    };
 
-    // Resolve codec names
+    processReport(sendReport);
+    processReport(recvReport);
+
+    // Resolve codec names from whichever report has the codec
     const resolveCodec = (codecId) => {
       if (!codecId) return null;
-      const codec = report.get(codecId);
+      const codec = sendReport?.get(codecId) || recvReport?.get(codecId);
       return codec?.mimeType?.split("/")[1] || null;
     };
 
@@ -94,8 +107,9 @@ export function useWebRTCStats(peerConnectionRef) {
     let connectionType = null;
 
     if (activePair) {
-      const localCandidate = report.get(activePair.localCandidateId);
-      const remoteCandidate = report.get(activePair.remoteCandidateId);
+      const report = sendReport || recvReport;
+      const localCandidate = report?.get(activePair.localCandidateId);
+      const remoteCandidate = report?.get(activePair.remoteCandidateId);
       if (localCandidate) {
         localAddress = `${localCandidate.address}:${localCandidate.port}`;
         transportProtocol = localCandidate.protocol;
@@ -106,7 +120,6 @@ export function useWebRTCStats(peerConnectionRef) {
       }
     }
 
-    // Compute bitrates (delta bytes * 8 / delta seconds / 1000 = kbps)
     const computeKbps = (currentBytes, prevBytes) => {
       if (!prev || !deltaMs || deltaMs <= 0 || currentBytes == null || prevBytes == null) return null;
       const delta = currentBytes - prevBytes;
@@ -114,7 +127,6 @@ export function useWebRTCStats(peerConnectionRef) {
       return (delta * 8) / (deltaMs / 1000) / 1000;
     };
 
-    // Compute packet deltas for the packet visualizer
     const computeDelta = (current, previous) => {
       if (current == null || previous == null) return 0;
       const d = current - previous;
@@ -126,10 +138,6 @@ export function useWebRTCStats(peerConnectionRef) {
     const audioSendKbps = computeKbps(outboundAudio?.bytesSent, prev?.outboundAudioBytesSent);
     const audioRecvKbps = computeKbps(inboundAudio?.bytesReceived, prev?.inboundAudioBytesReceived);
 
-    // Packet loss — INTERVAL-BASED (last 1.5s), not cumulative session average.
-    // Cumulative averages hide real-time spikes. If you lost 5 packets out of
-    // 50,000 total, cumulative shows 0.01%. But if those 5 were all in the
-    // last 1.5s out of 100 received, the real-time loss is 5% — that's what matters.
     const deltaVideoLost = computeDelta(inboundVideo?.packetsLost, prev?.inboundVideoPacketsLost);
     const deltaVideoRecv = computeDelta(inboundVideo?.packetsReceived, prev?.inboundVideoPacketsReceived);
     const videoLossPercent = (deltaVideoLost + deltaVideoRecv) > 0
@@ -147,7 +155,6 @@ export function useWebRTCStats(peerConnectionRef) {
       : null;
 
     const snapshot = {
-      // Transport
       rtt,
       availableBitrate: activePair?.availableOutgoingBitrate != null
         ? activePair.availableOutgoingBitrate / 1000
@@ -156,8 +163,6 @@ export function useWebRTCStats(peerConnectionRef) {
       remoteAddress,
       transportProtocol,
       connectionType,
-
-      // Outbound video
       videoSendBitrate: videoSendKbps,
       videoFpsSent: outboundVideo?.framesPerSecond ?? null,
       videoWidthSent: outboundVideo?.frameWidth ?? null,
@@ -165,12 +170,8 @@ export function useWebRTCStats(peerConnectionRef) {
       videoCodecSent: resolveCodec(outboundVideo?.codecId),
       qualityLimitationReason: outboundVideo?.qualityLimitationReason ?? null,
       framesEncoded: outboundVideo?.framesEncoded ?? null,
-
-      // Outbound audio
       audioSendBitrate: audioSendKbps,
       audioCodecSent: resolveCodec(outboundAudio?.codecId),
-
-      // Inbound video
       videoRecvBitrate: videoRecvKbps,
       videoFpsReceived: inboundVideo?.framesPerSecond ?? null,
       videoWidthReceived: inboundVideo?.frameWidth ?? null,
@@ -179,14 +180,10 @@ export function useWebRTCStats(peerConnectionRef) {
       videoJitter: inboundVideo?.jitter != null ? inboundVideo.jitter * 1000 : null,
       framesDecoded: inboundVideo?.framesDecoded ?? null,
       framesDropped: inboundVideo?.framesDropped ?? null,
-
-      // Inbound audio
       audioRecvBitrate: audioRecvKbps,
       audioJitter: inboundAudio?.jitter != null ? inboundAudio.jitter * 1000 : null,
       audioPacketLossPercent: audioLossPercent,
       audioCodecReceived: resolveCodec(inboundAudio?.codecId),
-
-      // Packet deltas (for packet visualizer)
       deltaVideoPacketsSent: computeDelta(outboundVideo?.packetsSent, prev?.outboundVideoPacketsSent),
       deltaAudioPacketsSent: computeDelta(outboundAudio?.packetsSent, prev?.outboundAudioPacketsSent),
       deltaVideoPacketsReceived: computeDelta(inboundVideo?.packetsReceived, prev?.inboundVideoPacketsReceived),
@@ -204,9 +201,10 @@ export function useWebRTCStats(peerConnectionRef) {
       audioJitter: pushHistory(prev.audioJitter, snapshot.audioJitter),
       videoFpsRecv: pushHistory(prev.videoFpsRecv, snapshot.videoFpsReceived),
       packetLoss: pushHistory(prev.packetLoss, videoLossPercent),
+      availableBitrate: pushHistory(prev.availableBitrate, snapshot.availableBitrate),
+      qualityLimitation: pushHistory(prev.qualityLimitation, snapshot.qualityLimitationReason || "none"),
     }));
 
-    // Store raw values for next delta calculation
     prevRef.current = {
       outboundVideoBytesSent: outboundVideo?.bytesSent,
       outboundAudioBytesSent: outboundAudio?.bytesSent,
@@ -220,7 +218,7 @@ export function useWebRTCStats(peerConnectionRef) {
       inboundAudioPacketsLost: inboundAudio?.packetsLost,
     };
     prevTimestampRef.current = now;
-  }, [peerConnectionRef]);
+  }, [sendTransportRef, recvTransportRef]);
 
   useEffect(() => {
     const interval = setInterval(collectStats, POLL_INTERVAL);
@@ -231,10 +229,11 @@ export function useWebRTCStats(peerConnectionRef) {
     };
   }, [collectStats]);
 
-  // Reset when connection drops
+  // Reset when transports drop
   useEffect(() => {
-    const pc = peerConnectionRef?.current;
-    if (!pc) {
+    const send = sendTransportRef?.current;
+    const recv = recvTransportRef?.current;
+    if (!send && !recv) {
       setStats(null);
       setHistory({
         rtt: [],
@@ -243,11 +242,13 @@ export function useWebRTCStats(peerConnectionRef) {
         audioJitter: [],
         videoFpsRecv: [],
         packetLoss: [],
+        availableBitrate: [],
+        qualityLimitation: [],
       });
       prevRef.current = null;
       prevTimestampRef.current = null;
     }
-  }, [peerConnectionRef?.current]);
+  }, [sendTransportRef?.current, recvTransportRef?.current]);
 
   return { stats, history };
 }

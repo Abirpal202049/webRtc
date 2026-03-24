@@ -327,7 +327,7 @@ function Section({ icon: Icon, title, children, defaultOpen = true }) {
 
 // ── Main Dashboard ──
 
-export default function MetricsDashboard({ stats, history }) {
+export default function MetricsDashboard({ stats, history, participantCount = 1 }) {
   const [activePopover, setActivePopover] = useState(null);
 
   if (!stats) {
@@ -356,7 +356,40 @@ export default function MetricsDashboard({ stats, history }) {
       <div className="flex items-center gap-2 mb-1">
         <Activity className="w-4 h-4 text-gray-400" />
         <span className="text-sm font-medium text-gray-300">Performance</span>
+        {participantCount > 1 && (
+          <span className="text-[9px] bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded font-medium">
+            SFU · {participantCount}p
+          </span>
+        )}
       </div>
+
+      {/* SFU Architecture Overview */}
+      {participantCount > 1 && (
+        <div className="bg-indigo-500/5 border border-indigo-500/15 rounded-lg px-3 py-2 space-y-1">
+          <p className="text-[10px] font-medium text-indigo-400">SFU Architecture</p>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]">
+            <div>
+              <span className="text-gray-500">Mode</span>
+              <span className="text-gray-300 ml-1">Server-mediated</span>
+            </div>
+            <div>
+              <span className="text-gray-500">Peers</span>
+              <span className="text-gray-300 ml-1">{participantCount}</span>
+            </div>
+            <div>
+              <span className="text-gray-500">You upload</span>
+              <span className="text-gray-300 ml-1">1 stream → SFU</span>
+            </div>
+            <div>
+              <span className="text-gray-500">You download</span>
+              <span className="text-gray-300 ml-1">{participantCount - 1} ← SFU</span>
+            </div>
+          </div>
+          <p className="text-[8px] text-gray-600">
+            Mesh P2P would require {participantCount - 1} uploads × {participantCount} people = {participantCount * (participantCount - 1)} connections
+          </p>
+        </div>
+      )}
 
       {/* Connection */}
       <Section icon={Wifi} title="Connection">
@@ -391,7 +424,7 @@ export default function MetricsDashboard({ stats, history }) {
           {...p}
         />
         <MetricRow
-          label="Remote"
+          label="SFU Server"
           infoKey="remoteAddress"
           value={stats.remoteAddress || "--"}
           color="text-gray-400"
@@ -399,8 +432,8 @@ export default function MetricsDashboard({ stats, history }) {
         />
       </Section>
 
-      {/* Video Sending */}
-      <Section icon={MonitorUp} title="Video (Sending)">
+      {/* Video Sending (You → SFU) */}
+      <Section icon={MonitorUp} title="Video (You → SFU)">
         <MetricRow
           label="Bitrate"
           infoKey="videoSendBitrate"
@@ -440,8 +473,8 @@ export default function MetricsDashboard({ stats, history }) {
         />
       </Section>
 
-      {/* Video Receiving */}
-      <Section icon={MonitorDown} title="Video (Receiving)">
+      {/* Video Receiving (SFU → You) */}
+      <Section icon={MonitorDown} title={`Video (SFU → You${participantCount > 2 ? ` · ${participantCount - 1} streams` : ""})`}>
         <MetricRow
           label="Bitrate"
           infoKey="videoRecvBitrate"
