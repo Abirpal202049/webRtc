@@ -58,6 +58,7 @@ export function useWebRTC() {
   const [eventLog, setEventLog] = useState([]);
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
+  const [isRemoteVideoEnabled, setIsRemoteVideoEnabled] = useState(false);
   const [inCall, setInCall] = useState(false);
   const [roomId, setRoomId] = useState(null);
 
@@ -195,6 +196,24 @@ export function useWebRTC() {
           detail: `Remote track received (${event.track.kind})`,
         });
         setRemoteStream(event.streams[0]);
+
+        /**
+         * Listen for the remote video track being muted/unmuted or ended.
+         *
+         * When the remote peer stops their camera (replaceTrack(null)),
+         * the track fires a "mute" event. When they re-acquire the camera
+         * and replaceTrack(newTrack), it fires "unmute".
+         *
+         * Without this, the remote <video> element just freezes on the
+         * last frame — because the stream object still exists, the UI
+         * keeps rendering the <video> element with stale data.
+         */
+        if (event.track.kind === "video") {
+          setIsRemoteVideoEnabled(true);
+          event.track.onmute = () => setIsRemoteVideoEnabled(false);
+          event.track.onunmute = () => setIsRemoteVideoEnabled(true);
+          event.track.onended = () => setIsRemoteVideoEnabled(false);
+        }
       };
 
       /**
@@ -589,6 +608,17 @@ export function useWebRTC() {
       // TURN OFF: Stop the track to release the microphone hardware
       currentTrack.stop();
       localStreamRef.current.removeTrack(currentTrack);
+
+      // Replace the track on the sender with null so the remote peer knows audio stopped
+      if (peerConnectionRef.current) {
+        const audioSender = peerConnectionRef.current
+          .getSenders()
+          .find((s) => s.track === currentTrack || s.track?.kind === "audio");
+        if (audioSender) {
+          await audioSender.replaceTrack(null);
+        }
+      }
+
       setIsAudioEnabled(false);
     } else if (!isAudioEnabled) {
       // TURN ON: Get a fresh audio track from the microphone
@@ -625,6 +655,18 @@ export function useWebRTC() {
       // TURN OFF: Stop the track to release the camera hardware (green light goes off)
       currentTrack.stop();
       localStreamRef.current.removeTrack(currentTrack);
+
+      // Replace the track on the sender with null so the remote peer's track
+      // fires a "mute" event — otherwise their <video> just freezes on the last frame
+      if (peerConnectionRef.current) {
+        const videoSender = peerConnectionRef.current
+          .getSenders()
+          .find((s) => s.track === currentTrack || s.track?.kind === "video");
+        if (videoSender) {
+          await videoSender.replaceTrack(null);
+        }
+      }
+
       setIsVideoEnabled(false);
 
       // Update the displayed local stream so the UI reflects the change
@@ -673,5 +715,6 @@ export function useWebRTC() {
     toggleVideo,
     isAudioEnabled,
     isVideoEnabled,
+    isRemoteVideoEnabled,
   };
 }

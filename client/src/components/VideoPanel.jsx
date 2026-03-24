@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { UserRound } from "lucide-react";
+import { UserRound, VideoOff } from "lucide-react";
 
 /**
  * VideoPanel — Displays local and remote video streams.
@@ -13,7 +13,7 @@ import { UserRound } from "lucide-react";
  * mirror — this is what users expect from a selfie view.
  * The local video is also muted to prevent audio feedback (echoing your own mic).
  */
-export default function VideoPanel({ localStream, remoteStream, connectionState }) {
+export default function VideoPanel({ localStream, remoteStream, connectionState, isRemoteVideoEnabled }) {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
 
@@ -31,10 +31,12 @@ export default function VideoPanel({ localStream, remoteStream, connectionState 
     }
   }, [remoteStream]);
 
+  const showRemoteVideo = remoteStream && isRemoteVideoEnabled;
+
   return (
     <div className="relative w-full h-full bg-gray-950 rounded-2xl overflow-hidden">
       {/* Remote video — fills the main area */}
-      {remoteStream ? (
+      {showRemoteVideo ? (
         <video
           ref={remoteVideoRef}
           autoPlay
@@ -43,23 +45,40 @@ export default function VideoPanel({ localStream, remoteStream, connectionState 
         />
       ) : (
         <div className="w-full h-full flex flex-col items-center justify-center text-gray-500">
-          <UserRound className="w-20 h-20 mb-4 opacity-30" />
-          <p className="text-lg font-medium">
-            {connectionState === "connecting"
-              ? "Connecting to peer..."
-              : connectionState === "connected"
-                ? "Waiting for remote video..."
-                : "Waiting for someone to join..."}
-          </p>
-          <p className="text-sm text-gray-600 mt-2">
-            Share the room ID with another person
-          </p>
+          {remoteStream ? (
+            <>
+              {/* Remote peer is connected but camera is off */}
+              <VideoOff className="w-16 h-16 sm:w-20 sm:h-20 mb-4 opacity-30" />
+              <p className="text-base sm:text-lg font-medium">Camera is turned off</p>
+              {/* Keep the video element in the DOM so audio still plays */}
+              <video
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                className="hidden"
+              />
+            </>
+          ) : (
+            <>
+              <UserRound className="w-16 h-16 sm:w-20 sm:h-20 mb-4 opacity-30" />
+              <p className="text-base sm:text-lg font-medium">
+                {connectionState === "connecting"
+                  ? "Connecting to peer..."
+                  : connectionState === "connected"
+                    ? "Waiting for remote video..."
+                    : "Waiting for someone to join..."}
+              </p>
+              <p className="text-xs sm:text-sm text-gray-600 mt-2">
+                Share the room ID with another person
+              </p>
+            </>
+          )}
         </div>
       )}
 
       {/* Local video — small picture-in-picture overlay */}
       {localStream && (
-        <div className="absolute bottom-4 right-4 w-48 h-36 rounded-xl overflow-hidden border-2 border-gray-700 shadow-2xl bg-gray-900">
+        <div className="absolute bottom-3 right-3 w-28 h-20 sm:w-48 sm:h-36 rounded-lg sm:rounded-xl overflow-hidden border-2 border-gray-700 shadow-2xl bg-gray-900">
           <video
             ref={localVideoRef}
             autoPlay
