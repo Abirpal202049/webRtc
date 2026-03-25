@@ -93,7 +93,7 @@ function getWebRtcTransportOptions() {
     listenIps: [
       {
         ip: "0.0.0.0",
-        announcedIp: ANNOUNCED_IP || getLocalIp(),
+        announcedIp: resolvedAnnouncedIp || ANNOUNCED_IP || getLocalIp(),
       },
     ],
     enableUdp: true,
@@ -114,6 +114,29 @@ function getLocalIp() {
   }
   return "127.0.0.1";
 }
+
+/**
+ * Detect public IP at startup (for cloud deployments like Render).
+ * Falls back to ANNOUNCED_IP env var, then local IP.
+ */
+async function detectPublicIp() {
+  if (ANNOUNCED_IP) return ANNOUNCED_IP;
+
+  try {
+    const response = await fetch("https://api.ipify.org?format=json");
+    const data = await response.json();
+    if (data.ip) {
+      console.log(`Detected public IP: ${data.ip}`);
+      return data.ip;
+    }
+  } catch {
+    console.warn("Could not detect public IP, using local IP");
+  }
+
+  return getLocalIp();
+}
+
+let resolvedAnnouncedIp = null;
 
 // ── mediasoup Workers ──
 
@@ -799,11 +822,12 @@ wss.on("connection", (socket) => {
 // ── Start server ──
 
 async function main() {
+  resolvedAnnouncedIp = await detectPublicIp();
   await createWorkers();
   server.listen(PORT, () => {
     console.log(`Signaling + SFU server running on port ${PORT}`);
     console.log(`Local IP: ${getLocalIp()}`);
-    console.log(`Announced IP: ${ANNOUNCED_IP || getLocalIp()}`);
+    console.log(`Announced IP: ${resolvedAnnouncedIp}`);
   });
 }
 
