@@ -16,7 +16,12 @@
  * @param {object} callbacks - Event handlers for all message types.
  */
 export function createSignalingClient(callbacks) {
-  const wsUrl = import.meta.env.VITE_SIGNALING_URL || `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:8080`;
+  // In production (HTTPS), connect to the same host without port (443 is default).
+  // In development (HTTP), use port 8080 for the local signaling server.
+  const wsUrl = import.meta.env.VITE_SIGNALING_URL
+    || (window.location.protocol === "https:"
+      ? `wss://${window.location.host}`
+      : `ws://${window.location.hostname}:8080`);
   const socket = new WebSocket(wsUrl);
 
   function log(event, detail) {

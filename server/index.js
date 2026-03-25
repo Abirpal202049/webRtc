@@ -88,7 +88,19 @@ const mediaCodecs = [
  * listenIps: The server's IP(s) that clients connect to.
  * announcedIp: The public IP if behind NAT (set via ANNOUNCED_IP env var).
  */
-function getWebRtcTransportOptions() {
+function getWebRtcTransportOptions(workerIndex) {
+  // Use WebRtcServer if available (multiplexes through a single port)
+  if (webRtcServers[workerIndex]) {
+    return {
+      webRtcServer: webRtcServers[workerIndex],
+      enableUdp: true,
+      enableTcp: true,
+      preferUdp: true,
+      initialAvailableOutgoingBitrate: 1000000,
+    };
+  }
+
+  // Fallback: direct listen (for local development)
   return {
     listenIps: [
       {
@@ -141,29 +153,49 @@ let resolvedAnnouncedIp = null;
 // ── mediasoup Workers ──
 
 const workers = [];
+const webRtcServers = []; // one per worker — multiplexes all transports on a single port
 let nextWorkerIdx = 0;
+
+// Port range for mediasoup RTC (each worker gets one port for its WebRtcServer)
+const RTC_MIN_PORT = parseInt(process.env.RTC_MIN_PORT) || 40000;
+const RTC_MAX_PORT = parseInt(process.env.RTC_MAX_PORT) || 49999;
 
 async function createWorkers() {
   const numWorkers = Math.min(os.cpus().length, 2);
   for (let i = 0; i < numWorkers; i++) {
     const worker = await mediasoup.createWorker({
       logLevel: "warn",
-      rtcMinPort: 40000,
-      rtcMaxPort: 49999,
+      rtcMinPort: RTC_MIN_PORT,
+      rtcMaxPort: RTC_MAX_PORT,
     });
     worker.on("died", () => {
       console.error(`mediasoup worker ${worker.pid} died — exiting`);
       process.exit(1);
     });
+
+    // Create a WebRtcServer per worker — multiplexes all WebRTC transports
+    // through a single UDP+TCP port. Critical for cloud deployments that
+    // don't expose a wide port range.
+    const webRtcServerPort = RTC_MIN_PORT + i;
+    const announcedIp = resolvedAnnouncedIp || ANNOUNCED_IP || getLocalIp();
+    const webRtcServer = await worker.createWebRtcServer({
+      listenInfos: [
+        { protocol: "udp", ip: "0.0.0.0", announcedAddress: announcedIp, port: webRtcServerPort },
+        { protocol: "tcp", ip: "0.0.0.0", announcedAddress: announcedIp, port: webRtcServerPort },
+      ],
+    });
+
     workers.push(worker);
-    console.log(`mediasoup worker ${worker.pid} created`);
+    webRtcServers.push(webRtcServer);
+    console.log(`mediasoup worker ${worker.pid} created (WebRtcServer on port ${webRtcServerPort})`);
   }
 }
 
 function getNextWorker() {
-  const worker = workers[nextWorkerIdx];
+  const idx = nextWorkerIdx;
+  const worker = workers[idx];
   nextWorkerIdx = (nextWorkerIdx + 1) % workers.length;
-  return worker;
+  return { worker, workerIndex: idx };
 }
 
 // ── Room storage ──
@@ -259,7 +291,7 @@ wss.on("connection", (socket) => {
             return;
           }
 
-          const worker = getNextWorker();
+          const { worker, workerIndex } = getNextWorker();
           const router = await worker.createRouter({ mediaCodecs });
 
           peerId = randomBytes(8).toString("hex");
@@ -270,6 +302,7 @@ wss.on("connection", (socket) => {
 
           const room = {
             router,
+            workerIndex,
             peers: new Map(),
             pending: new Map(),
             creatorPeerId: peerId,
@@ -455,7 +488,7 @@ wss.on("connection", (socket) => {
           if (!peer) return;
 
           const transport = await room.router.createWebRtcTransport(
-            getWebRtcTransportOptions()
+            getWebRtcTransportOptions(room.workerIndex)
           );
 
           transport.on("dtlsstatechange", (dtlsState) => {
