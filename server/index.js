@@ -35,8 +35,10 @@ const PORT = process.env.PORT || 8080;
 const ANNOUNCED_IP = process.env.ANNOUNCED_IP || null;
 const MAX_PARTICIPANTS = 10;
 
-// TURN server config (optional, for NAT traversal reliability)
-const TURN_URL = process.env.TURN_URL || null;
+// TURN server config — REQUIRED for cloud deployments (Render, Railway, etc.)
+// that don't expose UDP/TCP port ranges. Without TURN, media transport fails
+// because mediasoup's WebRtcServer ports are firewalled.
+const TURN_URLS = process.env.TURN_URLS || process.env.TURN_URL || null;
 const TURN_USERNAME = process.env.TURN_USERNAME || null;
 const TURN_CREDENTIAL = process.env.TURN_CREDENTIAL || null;
 
@@ -45,9 +47,11 @@ function getIceServers() {
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
   ];
-  if (TURN_URL) {
+  if (TURN_URLS) {
+    // Support multiple TURN URLs (comma-separated)
+    const urls = TURN_URLS.split(",").map((u) => u.trim());
     servers.push({
-      urls: TURN_URL,
+      urls,
       username: TURN_USERNAME,
       credential: TURN_CREDENTIAL,
     });
